@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "nate.omatracker",
+  "name": "Omatracker",
+  "version": "1.0.0",
+  "author": "nate",
+  "license": "MIT",
+  "description": "Theme-aware tracker for which programs are focused and for how long, with daily limits.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omatracker",
+    "description": "Focused program and today's time. Click for usage and limits.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "schema": [
+      {
+        "key": "showName",
+        "type": "boolean",
+        "label": "Show the program name",
+        "defaultValue": true,
+        "description": "Off shows only the time. The panel always shows names."
+      },
+      {
+        "key": "warnPercent",
+        "type": "integer",
+        "label": "Warn at percent of limit",
+        "defaultValue": 80,
+        "minimum": 50,
+        "maximum": 100,
+        "description": "The bar shifts to the accent color, and a notification is sent, at this share of a daily limit."
+      },
+      {
+        "key": "idleMinutes",
+        "type": "integer",
+        "label": "Stop counting after idle (minutes)",
+        "defaultValue": 2,
+        "minimum": 1,
+        "maximum": 60,
+        "description": "Time is not counted once the session has been idle this long."
+      }
+    ]
+  }
+}
