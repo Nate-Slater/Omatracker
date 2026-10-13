@@ -33,3 +33,23 @@ omarchy plugin remove nate.omatracker
 ```
 
 Removal disables the plugin and deletes this checkout. It does not delete `~/.local/share/omatracker/`. Remove that directory too if you want the history gone.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Dependencies
+
+No extra packages, network access, install hooks, or privileges. The only command it runs is `omarchy-notification-send`, which ships with Omarchy, and only when a daily limit is reached. Everything else uses the shell already running: Quickshell, the theme tokens, and the focused window.
+
+## Ownership
+
+The code in this repository is original. There are no preview images or other third-party assets.
+
+## Configuration
+
+The plugin does not write `shell.json`, Hyprland config, or any other app's files. Enabling it through `omarchy plugin add` is what places the bar widget, and that step asks first unless you pass `--enable`. The only file it creates is its own data file, `~/.local/share/omatracker/data.json`.
+
+## Security
+
+A marketplace listing is not a security review. This plugin runs unsandboxed inside `omarchy-shell`, with the same permissions as your user. Read it before you enable it.
