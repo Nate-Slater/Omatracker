@@ -24,7 +24,7 @@ Time counts only while a program is focused and the session is not idle. Games l
 omarchy bar move nate.omatracker --section right
 ```
 
-Per-widget settings live on the bar entry: show the program name, warn percentage, and idle cutoff. Usage and limits are stored locally in `~/.local/share/omatracker/data.json`.
+Per-widget settings live on the bar entry: show the program name, warn percentage, and idle cutoff. Usage and limits are stored locally in `~/.local/share/omatracker/data.json`. That directory is kept at mode 0700, and the history file and any corrupt backups at mode 0600. An older install is migrated to those modes before the file is read or written again.
 
 ## Remove
 
@@ -40,7 +40,7 @@ MIT. See [LICENSE](LICENSE).
 
 ## Dependencies
 
-No extra packages, network access, install hooks, or privileges. The only command it runs is `omarchy-notification-send`, which ships with Omarchy, and only when a daily limit is reached. Everything else uses the shell already running: Quickshell, the theme tokens, and the focused window.
+Runtime dependencies are Omarchy/Quickshell, Bash, GNU coreutils (`mkdir`, `chmod`, `stat`, `cat`), and the Arch `acl` package (`setfacl`, `getfacl`). The bundled `restrict-store.sh` runs at startup and before saves to establish and verify private storage. `omarchy-notification-send` sends limit notifications. These dependencies are present on the tested Omarchy installation; the plugin does not install packages or request privileges. It has no network access, install hooks, remote builds, or separate service/Quickshell process.
 
 ## Ownership
 
@@ -48,8 +48,16 @@ The code in this repository is original. There are no preview images or other th
 
 ## Configuration
 
-The plugin does not write `shell.json`, Hyprland config, or any other app's files. Enabling it through `omarchy plugin add` is what places the bar widget, and that step asks first unless you pass `--enable`. The only file it creates is its own data file, `~/.local/share/omatracker/data.json`.
+The plugin does not write `shell.json`, Hyprland config, or any other app's files. Enabling it through `omarchy plugin add` is what places the bar widget, and that step asks first unless you pass `--enable`. The only files it creates are its own history, `~/.local/share/omatracker/data.json`, and a `data.json.corrupt-<time>` backup if that file cannot be parsed. Both stay mode 0600 inside a mode 0700 directory.
 
 ## Security
 
-A marketplace listing is not a security review. This plugin runs unsandboxed inside `omarchy-shell`, with the same permissions as your user. Read it before you enable it.
+A marketplace listing is not a security certification. As described in the [Omarchy development guide](https://plugins.omarchy.org/develop.html), this plugin runs unsandboxed inside `omarchy-shell`, with your user permissions.
+
+Before reading history or saving it, the plugin migrates existing files, removes named ACL grants, and verifies `0700` directories / `0600` files. The directory gets an owner-only default ACL so future files remain private even with umask `000`. Missing history and backup files are created empty and verified at `0600` **before** receiving private bytes. Atomic FileView saves preserve that mode, including temporary files; there is no post-save permission window. Permission/ACL failures stop tracking and persistence rather than loading or replacing the history. Symlink and multiply linked history entries are rejected. Storage must support POSIX permissions and ACLs and reside under a trusted user-owned home directory.
+
+This protects against other unprivileged accounts on a correctly enforcing local filesystem. It cannot exclude root or processes running as your user, or compensate for a filesystem/server that falsely reports enforcing permissions. No locally stored encryption key would create a same-user security boundary. The plugin's code and parent directories are trusted, as with other Omarchy plugins.
+
+Daily usage is retained for up to 90 days; application metadata, limits, and corrupt backups may remain longer. Wrapper window titles can become persisted application names. Limit notifications also disclose application usage to the session notification service, whose storage and retention are managed by Omarchy, not this plugin. Removal leaves the tracker history for you to delete explicitly.
+
+See [SECURITY.md](SECURITY.md) for the review scope and verification commands. Periodic saves run every four seconds while usage changes; shutdown finishes a validated write already in progress rather than starting an unchecked final write.

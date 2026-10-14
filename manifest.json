@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "nate.omatracker",
   "name": "Omatracker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "nate",
   "license": "MIT",
   "description": "Theme-aware tracker for which programs are focused and for how long, with daily limits.",

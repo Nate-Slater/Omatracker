@@ -13,15 +13,25 @@ Item {
   property string omarchyPath: ""
 
   readonly property string home: Quickshell.env("HOME")
+  // An empty or relative HOME would land the history in the process cwd, which
+  // may be traversable by other accounts. Fail closed instead.
+  readonly property bool storageOk: home.length > 0 && home.charAt(0) === "/"
   readonly property string dataDir: home + "/.local/share/omatracker"
   readonly property string dataPath: dataDir + "/data.json"
+  property string restrictScript: ""
   readonly property int tickMs: 1000
   readonly property int maxGapMs: 8000
 
   property bool loaded: false
-  property bool dirReady: false
+  // True only after the tracker directory is 0700 and existing history and
+  // corrupt backups are 0600. Nothing may read or write before that.
+  property bool permsReady: false
   property bool readyToSave: false
-  property var state: Model.emptyState()
+  property bool writing: false
+  property bool saveQueued: false
+  property string permAction: ""
+  property string savedText: ""
+  property var trackerState: Model.emptyState()
   property var snapshot: ({})
   property int revision: 0
   property int warnPercent: 80
@@ -91,7 +101,7 @@ Item {
 
   function publish() {
     root.snapshot = Model.snapshot(
-      root.state,
+      root.trackerState,
       root.focusedId,
       root.trackingId ? root.lastSampleMs : 0,
       root.focusedTitle,
@@ -116,16 +126,96 @@ Item {
   }
 
   function scheduleSave() {
-    if (root.readyToSave) saveTimer.restart()
+    if (root.readyToSave && !saveTimer.running) saveTimer.start()
+  }
+
+  function fileUrlPath(url) {
+    var value = String(url || "")
+    var prefix = "file://"
+    if (value.indexOf(prefix) !== 0) return ""
+    var path = decodeURIComponent(value.slice(prefix.length))
+    return path.charAt(0) === "/" ? path : ""
+  }
+
+  function failClosed(message) {
+    root.permsReady = false
+    root.readyToSave = false
+    root.loaded = false
+    root.trackingId = ""
+    root.writing = false
+    root.saveQueued = false
+    root.permAction = ""
+    saveTimer.stop()
+    console.warn(message)
+  }
+
+  function execPerm(action, extra) {
+    var args = ["bash", root.restrictScript, action, root.dataDir, root.dataPath]
+    if (extra) args.push(extra)
+    root.permAction = action
+    permProc.exec(args)
+  }
+
+  function prepareStorage() {
+    root.restrictScript = root.fileUrlPath(Qt.resolvedUrl("restrict-store.sh"))
+    if (!root.storageOk || !root.restrictScript) {
+      root.failClosed("omatracker: not reading usage history; home or restrict script is unusable")
+      return
+    }
+    root.execPerm("prepare")
+  }
+
+  // The helper seeds missing files at 0600 and verifies owner-only ACLs before
+  // this write. QSaveFile preserves that mode; no post-save chmod is needed.
+  function beginSave() {
+    if (root.writing || root.permAction !== "") return
+    if (!root.saveQueued || !root.readyToSave || !root.permsReady) return
+    root.saveQueued = false
+    root.execPerm("tighten")
   }
 
   function flush() {
-    if (!root.readyToSave || !root.dirReady) return
-    dataFile.setText(Model.serialize(root.state))
+    if (!root.readyToSave || !root.permsReady) return
+    root.saveQueued = true
+    root.beginSave()
+  }
+
+  function noteSaved() {
+    root.writing = false
+    // FileView completes its operation after emitting saved.
+    Qt.callLater(root.beginSave)
+  }
+
+  function finishPerm(exitCode, exitStatus) {
+    var action = root.permAction
+    root.permAction = ""
+    if (exitCode !== 0 || exitStatus !== 0) {
+      root.failClosed("omatracker: not reading or writing usage history; could not keep it private")
+      return
+    }
+    if (action === "prepare") {
+      root.permsReady = true
+      dataFile.path = root.dataPath
+      return
+    }
+    if (action === "quarantine") {
+      root.adopt(Model.emptyState())
+      return
+    }
+    if (action === "tighten") {
+      var text = Model.serialize(root.trackerState)
+      if (text !== root.savedText) {
+        root.writing = true
+        root.savedText = text
+        dataFile.setText(text)
+      } else {
+        Qt.callLater(root.beginSave)
+      }
+    }
   }
 
   function adopt(next) {
-    root.state = next
+    root.trackerState = next
     root.loaded = true
     root.readyToSave = true
     root.lastSampleMs = Date.now()
@@ -135,12 +225,22 @@ Item {
   }
 
   function ingest(raw, existed) {
-    if (!root.dirReady || root.loaded) return
+    if (!root.permsReady || root.loaded) return
+    root.savedText = raw
     var parsed = Model.parseState(raw, Date.now())
     if (!parsed.ok && existed) {
+      // Do not replace the corrupt file until its backup is mode 0600.
       root.readyToSave = false
-      quarantineProc.command = ["cp", "-f", "--", root.dataPath, root.dataPath + ".corrupt-" + Date.now()]
-      quarantineProc.running = true
+      if (root.permAction !== "" || root.writing) {
+        root.failClosed("omatracker: not writing usage history; could not quarantine a corrupt file privately")
+        return
+      }
+      var stamp = String(Math.round(Date.now()))
+      if (!/^[0-9]+$/.test(stamp)) {
+        root.failClosed("omatracker: not writing usage history; could not name a private corrupt backup")
+        return
+      }
+      root.execPerm("quarantine", root.dataPath + ".corrupt-" + stamp)
       return
     }
     root.adopt(parsed.ok ? parsed.state : Model.emptyState())
@@ -152,20 +252,20 @@ Item {
     var active = root.currentFocus()
     var activeId = active ? active.id : ""
     var idle = idleMonitor.isIdle
-    var should = !root.state.paused && !idle && activeId !== ""
+    var should = !root.trackerState.paused && !idle && activeId !== ""
     var changed = false
     if (root.lastSampleMs > 0 && root.trackingId) {
-      var credited = Model.applyElapsed(root.state, root.trackingId, root.lastSampleMs, now, root.maxGapMs, root.warnRatio)
+      var credited = Model.applyElapsed(root.trackerState, root.trackingId, root.lastSampleMs, now, root.maxGapMs, root.warnRatio)
       if (credited.changed) {
-        root.state = credited.state
+        root.trackerState = credited.state
         changed = true
         if (credited.events.length) root.notify(credited.events)
       }
     }
     if (active) {
-      var touched = Model.touchApp(root.state, active.id, active.name, active.icon, active.matched)
+      var touched = Model.touchApp(root.trackerState, active.id, active.name, active.icon, active.matched)
       if (touched.changed) {
-        root.state = touched.state
+        root.trackerState = touched.state
         changed = true
       }
       if (!active.matched && root.catalog.length === 0) root.refreshCatalog()
@@ -181,7 +281,7 @@ Item {
   function setPaused(value) {
     if (!root.loaded) return
     root.sample()
-    root.state = Model.setPaused(root.state, !!value)
+    root.trackerState = Model.setPaused(root.trackerState, !!value)
     root.trackingId = ""
     root.lastSampleMs = Date.now()
     root.publish()
@@ -190,19 +290,25 @@ Item {
 
   function setLimit(appId, minutes) {
     if (!root.loaded) return
-    var result = Model.setLimit(root.state, appId, minutes, Model.dayKey(new Date()), root.warnRatio)
+    var result = Model.setLimit(root.trackerState, appId, minutes, Model.dayKey(new Date()), root.warnRatio)
     if (!result.changed) return
-    root.state = result.state
+    root.trackerState = result.state
     root.publish()
     root.flush()
     if (result.events.length) root.notify(result.events)
   }
 
-  Component.onDestruction: root.flush()
+  Component.onCompleted: root.prepareStorage()
+
+  Component.onDestruction: {
+    // Only finish an already validated write. Do not bypass the permission
+    // gate during teardown; the periodic timer bounds unsaved activity to 4s.
+    if (root.writing) dataFile.waitForJob()
+  }
 
   IdleMonitor {
     id: idleMonitor
-    enabled: root.loaded && !root.state.paused
+    enabled: root.loaded && !root.trackerState.paused
     timeout: Math.max(30, root.idleMinutes * 60)
     respectInhibitors: true
     onIsIdleChanged: root.sample()
@@ -235,24 +341,32 @@ Item {
   }
 
   Process {
-    id: mkdirProc
-    command: ["mkdir", "-p", root.dataDir]
-    running: true
-    onExited: {
-      root.dirReady = true
-      dataFile.reload()
+    id: permProc
+    onExited: function(exitCode, exitStatus) {
+      root.finishPerm(exitCode, exitStatus)
+    }
+    // FailedToStart does not emit exited. Without this, a missing bash would
+    // leave permAction set and tracking disabled with no warning.
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() {
+        if (!permProc.running && root.permAction !== "")
+          root.failClosed("omatracker: not reading or writing usage history; could not run the permission check")
+      })
     }
   }
 
-  Process { id: quarantineProc; onExited: root.adopt(Model.emptyState()) }
-
+  // Empty path prevents eager reads until the permission migration succeeds.
   FileView {
     id: dataFile
-    path: root.dataPath
+    path: ""
     watchChanges: false
     atomicWrites: true
     printErrors: false
     onLoaded: root.ingest(text(), true)
-    onLoadFailed: root.ingest("", false)
+    // The helper has already created data.json: ANY read failure is an error,
+    // not a first run. Never replace unreadable history with an empty state.
+    onLoadFailed: root.failClosed("omatracker: could not read private usage history")
+    onSaved: root.noteSaved()
+    onSaveFailed: root.failClosed("omatracker: could not save private usage history")
   }
 }
